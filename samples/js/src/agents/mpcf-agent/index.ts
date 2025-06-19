@@ -4,13 +4,15 @@ import { v4 as uuidv4 } from "uuid"; // For generating unique IDs
 import {
   InMemoryTaskStore,
   TaskStore,
-  schema,
   A2AExpressApp,
   AgentExecutor,
   RequestContext,
-  IExecutionEventBus,
   DefaultRequestHandler,
-} from "../../server/index.js";
+  ExecutionEventBus,
+  TaskStatusUpdateEvent,
+  AgentCard,
+  Message,
+} from "@a2a-js/sdk";
 import { MessageData } from "genkit";
 import generateProtocol from "../../mpcf/generateProtocol.js";
 import { ai, z } from "./genkit.js";
@@ -49,9 +51,6 @@ if (!process.env.GEMINI_API_KEY) {
   console.error("GEMINI_API_KEY environment variable is required");
   process.exit(1);
 }
-
-// Simple store for contexts
-const contexts: Map<string, schema.Message[]> = new Map();
 
 export const mpcGuessNumber = ai.defineTool(
   {
@@ -97,16 +96,17 @@ export const mpcGuessNumber = ai.defineTool(
 // --- Server Setup ---
 
 class MPCFAgentExecutor implements AgentExecutor {
+  cancelTask: (taskId: string, eventBus: ExecutionEventBus) => Promise<void>;
   async execute(
     requestContext: RequestContext,
-    eventBus: IExecutionEventBus
+    eventBus: ExecutionEventBus
   ): Promise<void> {
     // This executor now only handles non-MPC conversational tasks.
     // For this demo, we just reply with a helpful message.
     const taskId = requestContext.task?.id || uuidv4();
     const contextId = requestContext.userMessage.contextId || uuidv4();
 
-    const agentMessage: schema.Message = {
+    const agentMessage: Message = {
       kind: "message",
       role: "agent",
       messageId: uuidv4(),
@@ -120,12 +120,12 @@ class MPCFAgentExecutor implements AgentExecutor {
       contextId: contextId,
     };
 
-    const finalUpdate: schema.TaskStatusUpdateEvent = {
+    const finalUpdate: TaskStatusUpdateEvent = {
       kind: "status-update",
       taskId: taskId,
       contextId: contextId,
       status: {
-        state: schema.TaskState.Completed,
+        state: "completed",
         message: agentMessage,
         timestamp: new Date().toISOString(),
       },
@@ -135,7 +135,7 @@ class MPCFAgentExecutor implements AgentExecutor {
   }
 }
 
-const mpcfAgentCard: schema.AgentCard = {
+const mpcfAgentCard: AgentCard = {
   name: "MPCF Agent",
   description:
     "An agent that can answer questions about movies and actors using TMDB.",

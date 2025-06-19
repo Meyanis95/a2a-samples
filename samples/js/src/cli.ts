@@ -19,7 +19,7 @@ import {
   // Type for the agent card
   AgentCard,
   Part, // Added for explicit Part typing
-} from "./schema.js";
+} from "@a2a-js/sdk";
 import generateProtocol from "./mpcf/generateProtocol.js";
 
 const PORT = 8081;
@@ -159,7 +159,7 @@ function printMessageContent(message: Message) {
         `${partPrefix} ${colorize("blue", "📄 File:")} Name: ${
           filePart.file.name || "N/A"
         }, Type: ${filePart.file.mimeType || "N/A"}, Source: ${
-          filePart.file.bytes ? "Inline (bytes)" : filePart.file.uri
+          "bytes" in filePart.file ? "Inline (bytes)" : filePart.file.uri
         }`
       );
     } else if (part.kind === "data") {
@@ -424,7 +424,7 @@ async function main() {
             typedEvent.kind === "status-update" &&
             (typedEvent as TaskStatusUpdateEvent).final &&
             (typedEvent as TaskStatusUpdateEvent).status.state !==
-              TaskState.InputRequired
+              "input-required"
           ) {
             console.log(
               colorize(

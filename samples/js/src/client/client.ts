@@ -2,8 +2,8 @@ import {
   AgentCard,
   AgentCapabilities,
   JSONRPCRequest,
-  JSONRPCResult,
   JSONRPCError,
+  JSONRPCResponse,
   JSONRPCErrorResponse,
   Message,
   Task,
@@ -29,7 +29,7 @@ import {
   TaskResubscriptionRequest,
   A2AError,
   SendMessageSuccessResponse,
-} from "../schema.js"; // Assuming schema.ts is in the same directory or appropriately pathed
+} from "@a2a-js/sdk"; // Assuming schema.ts is in the same directory or appropriately pathed
 
 // Helper type for the data yielded by streaming methods
 type A2AStreamEventData =
@@ -145,7 +145,7 @@ export class A2AClient {
    */
   private async _postRpcRequest<
     TParams,
-    TResponse extends JSONRPCResult<any> | JSONRPCErrorResponse
+    TResponse extends JSONRPCResponse | JSONRPCErrorResponse
   >(method: string, params: TParams): Promise<TResponse> {
     const endpoint = await this._getServiceEndpoint();
     const requestId = this.requestIdCounter++;
@@ -553,7 +553,7 @@ export class A2AClient {
         // Depending on strictness, this could be an error. For now, it's a warning.
       }
 
-      if (a2aStreamResponse.error) {
+      if ("error" in a2aStreamResponse) {
         const err = a2aStreamResponse.error as JSONRPCError | A2AError;
         throw new Error(
           `SSE event contained an error: ${err.message} (Code: ${
