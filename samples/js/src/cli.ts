@@ -3,6 +3,8 @@
 import readline from "node:readline";
 import crypto from "node:crypto";
 import { A2AClient } from "./client/client.js";
+import { WebSocket } from "ws";
+import assert from "assert";
 import {
   // Specific Params/Payload types used by the CLI
   MessageSendParams, // Changed from TaskSendParams
@@ -18,6 +20,9 @@ import {
   AgentCard,
   Part, // Added for explicit Part typing
 } from "./schema.js";
+import generateProtocol from "./mpcf/generateProtocol.js";
+
+const PORT = 8081;
 
 // --- ANSI Colors ---
 const colors = {
@@ -38,14 +43,15 @@ function colorize(color: keyof typeof colors, text: string): string {
   return `${colors[color]}${text}${colors.reset}`;
 }
 
-function generateId(): string { // Renamed for more general use
+function generateId(): string {
+  // Renamed for more general use
   return crypto.randomUUID();
 }
 
 // --- State ---
 let currentTaskId: string | undefined = undefined; // Initialize as undefined
 let currentContextId: string | undefined = undefined; // Initialize as undefined
-const serverUrl = process.argv[2] || "http://localhost:41241"; // Agent's base URL
+const serverUrl = process.argv[2] || "http://localhost:41244"; // Agent's base URL
 const client = new A2AClient(serverUrl);
 let agentName = "Agent"; // Default, try to get from agent card later
 
@@ -99,7 +105,11 @@ function printAgentEvent(
     }
 
     console.log(
-      `${prefix} ${stateEmoji} Status: ${colorize(stateColor, state)} (Task: ${update.taskId}, Context: ${update.contextId}) ${update.final ? colorize("bright", "[FINAL]") : ""}`
+      `${prefix} ${stateEmoji} Status: ${colorize(stateColor, state)} (Task: ${
+        update.taskId
+      }, Context: ${update.contextId}) ${
+        update.final ? colorize("bright", "[FINAL]") : ""
+      }`
     );
 
     if (update.status.message) {
@@ -110,8 +120,11 @@ function printAgentEvent(
   else if (event.kind === "artifact-update") {
     const update = event as TaskArtifactUpdateEvent; // Cast for type safety
     console.log(
-      `${prefix} 📄 Artifact Received: ${update.artifact.name || "(unnamed)"
-      } (ID: ${update.artifact.artifactId}, Task: ${update.taskId}, Context: ${update.contextId})`
+      `${prefix} 📄 Artifact Received: ${
+        update.artifact.name || "(unnamed)"
+      } (ID: ${update.artifact.artifactId}, Task: ${update.taskId}, Context: ${
+        update.contextId
+      })`
     );
     // Create a temporary message-like structure to reuse printMessageContent
     printMessageContent({
@@ -133,25 +146,34 @@ function printAgentEvent(
 }
 
 function printMessageContent(message: Message) {
-  message.parts.forEach((part: Part, index: number) => { // Added explicit Part type
+  message.parts.forEach((part: Part, index: number) => {
+    // Added explicit Part type
     const partPrefix = colorize("red", `  Part ${index + 1}:`);
-    if (part.kind === "text") { // Check kind property
+    if (part.kind === "text") {
+      // Check kind property
       console.log(`${partPrefix} ${colorize("green", "📝 Text:")}`, part.text);
-    } else if (part.kind === "file") { // Check kind property
+    } else if (part.kind === "file") {
+      // Check kind property
       const filePart = part as FilePart;
       console.log(
-        `${partPrefix} ${colorize("blue", "📄 File:")} Name: ${filePart.file.name || "N/A"
-        }, Type: ${filePart.file.mimeType || "N/A"}, Source: ${filePart.file.bytes ? "Inline (bytes)" : filePart.file.uri
+        `${partPrefix} ${colorize("blue", "📄 File:")} Name: ${
+          filePart.file.name || "N/A"
+        }, Type: ${filePart.file.mimeType || "N/A"}, Source: ${
+          filePart.file.bytes ? "Inline (bytes)" : filePart.file.uri
         }`
       );
-    } else if (part.kind === "data") { // Check kind property
+    } else if (part.kind === "data") {
+      // Check kind property
       const dataPart = part as DataPart;
       console.log(
         `${partPrefix} ${colorize("yellow", "📊 Data:")}`,
         JSON.stringify(dataPart.data, null, 2)
       );
     } else {
-      console.log(`${partPrefix} ${colorize("yellow", "Unsupported part kind:")}`, part);
+      console.log(
+        `${partPrefix} ${colorize("yellow", "Unsupported part kind:")}`,
+        part
+      );
     }
   });
 }
@@ -161,7 +183,10 @@ async function fetchAndDisplayAgentCard() {
   // Use the client's getAgentCard method.
   // The client was initialized with serverUrl, which is the agent's base URL.
   console.log(
-    colorize("dim", `Attempting to fetch agent card from agent at: ${serverUrl}`)
+    colorize(
+      "dim",
+      `Attempting to fetch agent card from agent at: ${serverUrl}`
+    )
   );
   try {
     // client.getAgentCard() uses the agentBaseUrl provided during client construction
@@ -176,17 +201,110 @@ async function fetchAndDisplayAgentCard() {
     if (card.capabilities?.streaming) {
       console.log(`  Streaming:   ${colorize("green", "Supported")}`);
     } else {
-      console.log(`  Streaming:   ${colorize("yellow", "Not Supported (or not specified)")}`);
+      console.log(
+        `  Streaming:   ${colorize(
+          "yellow",
+          "Not Supported (or not specified)"
+        )}`
+      );
     }
     // Update prompt prefix to use the fetched name
     // The prompt is set dynamically before each rl.prompt() call in the main loop
     // to reflect the current agentName if it changes (though unlikely after initial fetch).
   } catch (error: any) {
-    console.log(
-      colorize("yellow", `⚠️ Error fetching or parsing agent card`)
-    );
+    console.log(colorize("yellow", `⚠️ Error fetching or parsing agent card`));
     throw error;
   }
+}
+
+// --- MPC Over WebSockets ---
+async function startMpcOverWebsockets(aliceInputNumber: number) {
+  console.log(
+    colorize(
+      "bright",
+      `Attempting to start MPC with Bob via WebSockets. Your number: ${aliceInputNumber}`
+    )
+  );
+  console.log(
+    colorize("dim", `Connecting to MPC Host (Bob) at ws://localhost:${PORT}...`)
+  );
+
+  const ws = new WebSocket(`ws://localhost:${PORT}`); // Bob's MPC WebSocket endpoint
+
+  ws.on("error", (error) => {
+    console.error(colorize("red", `MPC WebSocket Error: ${error}`));
+    // Potentially clean up any MPC state
+  });
+
+  ws.on("close", () => {
+    console.log(colorize("dim", "MPC WebSocket connection closed."));
+    // Refresh readline prompt if needed
+    rl.prompt();
+  });
+
+  ws.on("open", async () => {
+    console.log(
+      colorize("green", "MPC WebSocket connection established with Bob.")
+    );
+    try {
+      // Ensure generateProtocol is correctly imported and its path is valid
+      // relative to the final build location of cli.js
+      const protocol = await generateProtocol("./src/mpcf/circuits/main.ts"); // Or the correct path
+
+      console.log(colorize("dim", "Setting up MPC session with Bob..."));
+      const session = protocol.join(
+        "alice",
+        { a: Number(aliceInputNumber) },
+        (to, msg) => {
+          assert(to === "bob", "MPC Error: Unexpected party to send to.");
+          // Send the MPC message to Bob via WebSocket
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(msg);
+          } else {
+            console.warn(
+              colorize("yellow", "MPC WebSocket not open, cannot send message.")
+            );
+          }
+        }
+      );
+
+      ws.on("message", (msg: Buffer) => {
+        // Process incoming MPC messages for the session, assuming they are from Bob.
+        console.log(colorize("dim", "Received MPC message from Bob."));
+        session.handleMessage("bob", msg);
+      });
+
+      // Return the MPC output to log the result.
+      console.log(
+        colorize("dim", "Waiting for MPC computation to complete...")
+      );
+      const { main } = await session.output();
+
+      console.log(
+        colorize(
+          "green",
+          `\nMPC Computation Result (via WebSocket): Your number is ${
+            main === 0 ? "equal" : main === 1 ? "larger" : "smaller"
+          }`
+        )
+      );
+    } catch (mpcError: any) {
+      console.error(
+        colorize(
+          "red",
+          `\nError during MPC session: ${mpcError.message || mpcError}`
+        )
+      );
+    } finally {
+      if (
+        ws.readyState === WebSocket.OPEN ||
+        ws.readyState === WebSocket.CONNECTING
+      ) {
+        ws.close();
+      }
+      // rl.prompt(); // Refresh prompt
+    }
+  });
 }
 
 // --- Main Loop ---
@@ -196,9 +314,17 @@ async function main() {
 
   await fetchAndDisplayAgentCard(); // Fetch the card before starting the loop
 
-  console.log(colorize("dim", `No active task or context initially. Use '/new' to start a fresh session or send a message.`));
   console.log(
-    colorize("green", `Enter messages, or use '/new' to start a new session. '/exit' to quit.`)
+    colorize(
+      "dim",
+      `No active task or context initially. Use '/new' to start a fresh session or send a message.`
+    )
+  );
+  console.log(
+    colorize(
+      "green",
+      `Enter messages, or use '/new' to start a new session. '/exit' to quit.`
+    )
   );
 
   rl.setPrompt(colorize("cyan", `${agentName} > You: `)); // Set initial prompt
@@ -213,11 +339,24 @@ async function main() {
       return;
     }
 
+    // Add this block for /mpc <number>
+    const mpcMatch = input.match(/^\/mpc\s+(\d+)$/i);
+    if (mpcMatch) {
+      console.log("---- MPC detected ----");
+      const number = parseInt(mpcMatch[1], 10);
+      await startMpcOverWebsockets(number);
+      rl.prompt();
+      return;
+    }
+
     if (input.toLowerCase() === "/new") {
       currentTaskId = undefined;
       currentContextId = undefined; // Reset contextId on /new
       console.log(
-        colorize("bright", `✨ Starting new session. Task and Context IDs are cleared.`)
+        colorize(
+          "bright",
+          `✨ Starting new session. Task and Context IDs are cleared.`
+        )
       );
       rl.prompt();
       return;
@@ -252,7 +391,6 @@ async function main() {
       messagePayload.contextId = currentContextId;
     }
 
-
     const params: MessageSendParams = {
       message: messagePayload,
       // Optional: configuration for streaming, blocking, etc.
@@ -272,40 +410,84 @@ async function main() {
         const timestamp = new Date().toLocaleTimeString(); // Get fresh timestamp for each event
         const prefix = colorize("magenta", `\n${agentName} [${timestamp}]:`);
 
-        if (event.kind === "status-update" || event.kind === "artifact-update") {
-          const typedEvent = event as TaskStatusUpdateEvent | TaskArtifactUpdateEvent;
+        if (
+          event.kind === "status-update" ||
+          event.kind === "artifact-update"
+        ) {
+          const typedEvent = event as
+            | TaskStatusUpdateEvent
+            | TaskArtifactUpdateEvent;
           printAgentEvent(typedEvent);
 
           // If the event is a TaskStatusUpdateEvent and it's final, reset currentTaskId
-          if (typedEvent.kind === "status-update" && (typedEvent as TaskStatusUpdateEvent).final && (typedEvent as TaskStatusUpdateEvent).status.state !== TaskState.InputRequired) {
-            console.log(colorize("yellow", `   Task ${typedEvent.taskId} is final. Clearing current task ID.`));
+          if (
+            typedEvent.kind === "status-update" &&
+            (typedEvent as TaskStatusUpdateEvent).final &&
+            (typedEvent as TaskStatusUpdateEvent).status.state !==
+              TaskState.InputRequired
+          ) {
+            console.log(
+              colorize(
+                "yellow",
+                `   Task ${typedEvent.taskId} is final. Clearing current task ID.`
+              )
+            );
             currentTaskId = undefined;
             // Optionally, you might want to clear currentContextId as well if a task ending implies context ending.
-            // currentContextId = undefined; 
+            // currentContextId = undefined;
             // console.log(colorize("dim", `   Context ID also cleared as task is final.`));
           }
-
         } else if (event.kind === "message") {
           const msg = event as Message;
-          console.log(`${prefix} ${colorize("green", "✉️ Message Stream Event:")}`);
+          console.log(
+            `${prefix} ${colorize("green", "✉️ Message Stream Event:")}`
+          );
           printMessageContent(msg);
           if (msg.taskId && msg.taskId !== currentTaskId) {
-            console.log(colorize("dim", `   Task ID context updated to ${msg.taskId} based on message event.`));
+            console.log(
+              colorize(
+                "dim",
+                `   Task ID context updated to ${msg.taskId} based on message event.`
+              )
+            );
             currentTaskId = msg.taskId;
           }
           if (msg.contextId && msg.contextId !== currentContextId) {
-            console.log(colorize("dim", `   Context ID updated to ${msg.contextId} based on message event.`));
+            console.log(
+              colorize(
+                "dim",
+                `   Context ID updated to ${msg.contextId} based on message event.`
+              )
+            );
             currentContextId = msg.contextId;
           }
         } else if (event.kind === "task") {
           const task = event as Task;
-          console.log(`${prefix} ${colorize("blue", "ℹ️ Task Stream Event:")} ID: ${task.id}, Context: ${task.contextId}, Status: ${task.status.state}`);
+          console.log(
+            `${prefix} ${colorize("blue", "ℹ️ Task Stream Event:")} ID: ${
+              task.id
+            }, Context: ${task.contextId}, Status: ${task.status.state}`
+          );
           if (task.id !== currentTaskId) {
-            console.log(colorize("dim", `   Task ID updated from ${currentTaskId || 'N/A'} to ${task.id}`));
+            console.log(
+              colorize(
+                "dim",
+                `   Task ID updated from ${currentTaskId || "N/A"} to ${
+                  task.id
+                }`
+              )
+            );
             currentTaskId = task.id;
           }
           if (task.contextId && task.contextId !== currentContextId) {
-            console.log(colorize("dim", `   Context ID updated from ${currentContextId || 'N/A'} to ${task.contextId}`));
+            console.log(
+              colorize(
+                "dim",
+                `   Context ID updated from ${currentContextId || "N/A"} to ${
+                  task.contextId
+                }`
+              )
+            );
             currentContextId = task.contextId;
           }
           if (task.status.message) {
@@ -313,13 +495,24 @@ async function main() {
             printMessageContent(task.status.message);
           }
           if (task.artifacts && task.artifacts.length > 0) {
-            console.log(colorize("gray", `   Task includes ${task.artifacts.length} artifact(s).`));
+            console.log(
+              colorize(
+                "gray",
+                `   Task includes ${task.artifacts.length} artifact(s).`
+              )
+            );
           }
         } else {
-          console.log(prefix, colorize("yellow", "Received unknown event structure from stream:"), event);
+          console.log(
+            prefix,
+            colorize("yellow", "Received unknown event structure from stream:"),
+            event
+          );
         }
       }
-      console.log(colorize("dim", `--- End of response stream for this input ---`));
+      console.log(
+        colorize("dim", `--- End of response stream for this input ---`)
+      );
     } catch (error: any) {
       const timestamp = new Date().toLocaleTimeString();
       const prefix = colorize("red", `\n${agentName} [${timestamp}] ERROR:`);
@@ -337,7 +530,9 @@ async function main() {
         );
       }
       if (!(error.code || error.data) && error.stack) {
-        console.error(colorize("gray", error.stack.split('\n').slice(1, 3).join('\n')));
+        console.error(
+          colorize("gray", error.stack.split("\n").slice(1, 3).join("\n"))
+        );
       }
     } finally {
       rl.prompt();
@@ -349,7 +544,7 @@ async function main() {
 }
 
 // --- Start ---
-main().catch(err => {
+main().catch((err) => {
   console.error(colorize("red", "Unhandled error in main:"), err);
   process.exit(1);
 });
